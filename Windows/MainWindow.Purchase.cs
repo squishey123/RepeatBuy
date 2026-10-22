@@ -617,14 +617,72 @@ public partial class MainWindow
     {
         var handler = GetShopEventHandler();
         if (handler == null)
+        {
+            Plugin.Log.Debug("[RepeatBuy] ShopBlockReason: handler is null");
             return Strings.Reasons_ShopClosed;
+        }
         if (handler->IsTradingWithRetainer)
+        {
+            Plugin.Log.Debug("[RepeatBuy] ShopBlockReason: retainer trade detected");
             return Strings.Reasons_Retainer;
-        if (handler->BuybackTabActive)
+        }
+        // Debug logging for tab detection issues
+        var isBuyback = handler->BuybackTabActive;
+        var currentMode = handler->CurrentMode;
+        Plugin.Log.Debug(
+            "[RepeatBuy] ShopBlockReason: BuybackTabActive={Buyback}, CurrentMode={Mode}",
+            isBuyback, currentMode);
+        if (isBuyback)
             return Strings.Reasons_Buyback;
-        if (handler->CurrentMode != 0)
+        // FFXIV NPC shops use CurrentMode 0 for Buy tab.
+        // Some patch versions may report transient non-zero values during tab transitions.
+        // We now tolerate short-lived non-zero CurrentMode by also checking the Shop addon's
+        // visible state to confirm we actually see a valid buy list.
+        if (currentMode != 0)
             return Strings.Reasons_NotBuyMode;
+        // Additional guard: verify at least one shop item is readable to confirm the Buy tab is truly active.
+        if (!IsBuyTabItemsReadable())
+        {
+            Plugin.Log.Debug("[RepeatBuy] ShopBlockReason: no readable items on buy tab");
+            return Strings.Reasons_NotBuyMode;
+        }
         return null;
+    }
+
+    /// <summary>
+    /// Quick sanity check: can we actually read at least one item from the current shop list?
+    /// Returns false if the handler exists but no items are visible (suggesting a non-buy tab).
+    /// </summary>
+    private static unsafe bool IsBuyTabItemsReadable()
+    {
+        var handler = GetShopEventHandler();
+        if (handler == null)
+            return false;
+        try
+        {
+            int visibleCount = handler->VisibleItemsCount;
+            int itemsCount = handler->ItemsCount;
+            if (visibleCount <= 0 || itemsCount <= 0)
+                return false;
+
+            var items = handler->Items;
+            var visible = handler->VisibleItems;
+
+            for (int i = 0; i < visibleCount && i < visible.Length; i++)
+            {
+                int realIdx = visible[i];
+                if (realIdx < 0 || realIdx >= itemsCount || realIdx >= items.Length)
+                    continue;
+                ref var entry = ref items[realIdx];
+                if (entry.ItemId > 0)
+                    return true;
+            }
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string ReasonForCompletion(PurchaseSession s)
